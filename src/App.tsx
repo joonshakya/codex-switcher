@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAccounts } from "./hooks/useAccounts";
 import { AccountCard, AddAccountModal } from "./components";
@@ -28,6 +28,9 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshSuccess, setRefreshSuccess] = useState(false);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
+  const [otherAccountsSort, setOtherAccountsSort] = useState<
+    "deadline_asc" | "deadline_desc" | "remaining_desc" | "remaining_asc"
+  >("deadline_asc");
 
   const toggleMask = (accountId: string) => {
     setMaskedAccounts((prev) => {
@@ -104,6 +107,49 @@ function App() {
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const hasRunningProcesses = processInfo && processInfo.count > 0;
+
+  const sortedOtherAccounts = useMemo(() => {
+    const getResetDeadline = (resetAt: number | null | undefined) =>
+      resetAt ?? Number.POSITIVE_INFINITY;
+
+    const getRemainingPercent = (usedPercent: number | null | undefined) => {
+      if (usedPercent === null || usedPercent === undefined) {
+        return Number.NEGATIVE_INFINITY;
+      }
+      return Math.max(0, 100 - usedPercent);
+    };
+
+    return [...otherAccounts].sort((a, b) => {
+      if (otherAccountsSort === "deadline_asc" || otherAccountsSort === "deadline_desc") {
+        const deadlineDiff =
+          getResetDeadline(a.usage?.primary_resets_at) -
+          getResetDeadline(b.usage?.primary_resets_at);
+        if (deadlineDiff !== 0) {
+          return otherAccountsSort === "deadline_asc" ? deadlineDiff : -deadlineDiff;
+        }
+        const remainingDiff =
+          getRemainingPercent(b.usage?.primary_used_percent) -
+          getRemainingPercent(a.usage?.primary_used_percent);
+        if (remainingDiff !== 0) return remainingDiff;
+        return a.name.localeCompare(b.name);
+      }
+
+      const remainingDiff =
+        getRemainingPercent(b.usage?.primary_used_percent) -
+        getRemainingPercent(a.usage?.primary_used_percent);
+      if (otherAccountsSort === "remaining_desc" && remainingDiff !== 0) {
+        return remainingDiff;
+      }
+      if (otherAccountsSort === "remaining_asc" && remainingDiff !== 0) {
+        return -remainingDiff;
+      }
+      const deadlineDiff =
+        getResetDeadline(a.usage?.primary_resets_at) -
+        getResetDeadline(b.usage?.primary_resets_at);
+      if (deadlineDiff !== 0) return deadlineDiff;
+      return a.name.localeCompare(b.name);
+    });
+  }, [otherAccounts, otherAccountsSort]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -230,11 +276,54 @@ function App() {
             {/* Other Accounts */}
             {otherAccounts.length > 0 && (
               <section>
-                <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-                  Other Accounts ({otherAccounts.length})
-                </h2>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider">
+                    Other Accounts ({otherAccounts.length})
+                  </h2>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="other-accounts-sort" className="text-xs text-gray-500">
+                      Sort
+                    </label>
+                    <div className="relative">
+                      <select
+                        id="other-accounts-sort"
+                        value={otherAccountsSort}
+                        onChange={(e) =>
+                          setOtherAccountsSort(
+                            e.target.value as
+                              | "deadline_asc"
+                              | "deadline_desc"
+                              | "remaining_desc"
+                              | "remaining_asc"
+                          )
+                        }
+                        className="appearance-none font-sans text-xs sm:text-sm font-medium pl-3 pr-9 py-2 rounded-xl border border-gray-300 bg-gradient-to-b from-white to-gray-50 text-gray-700 shadow-sm hover:border-gray-400 hover:shadow focus:outline-none focus:ring-2 focus:ring-gray-300 focus:border-gray-400 transition-all"
+                      >
+                        <option value="deadline_asc">Reset: earliest to latest</option>
+                        <option value="deadline_desc">Reset: latest to earliest</option>
+                        <option value="remaining_desc">
+                          % remaining: highest to lowest
+                        </option>
+                        <option value="remaining_asc">
+                          % remaining: lowest to highest
+                        </option>
+                      </select>
+                      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-gray-500">
+                        <svg
+                          className="h-4 w-4"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                        >
+                          <path d="M6 8l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    </div>
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {otherAccounts.map((account) => (
+                  {sortedOtherAccounts.map((account) => (
                     <AccountCard
                       key={account.id}
                       account={account}
