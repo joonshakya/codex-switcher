@@ -12,6 +12,8 @@ function App() {
     error,
     refreshUsage,
     refreshSingleUsage,
+    warmupAccount,
+    warmupAllAccounts,
     switchAccount,
     deleteAccount,
     renameAccount,
@@ -26,7 +28,13 @@ function App() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isWarmingAll, setIsWarmingAll] = useState(false);
+  const [warmingUpId, setWarmingUpId] = useState<string | null>(null);
   const [refreshSuccess, setRefreshSuccess] = useState(false);
+  const [warmupToast, setWarmupToast] = useState<{
+    message: string;
+    isError: boolean;
+  } | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
 
   const toggleMask = (accountId: string) => {
@@ -101,6 +109,53 @@ function App() {
     }
   };
 
+  const showWarmupToast = (message: string, isError = false) => {
+    setWarmupToast({ message, isError });
+    setTimeout(() => setWarmupToast(null), 2500);
+  };
+
+  const handleWarmupAccount = async (accountId: string, accountName: string) => {
+    try {
+      setWarmingUpId(accountId);
+      await warmupAccount(accountId);
+      showWarmupToast(`Warm-up sent for ${accountName}`);
+    } catch (err) {
+      console.error("Failed to warm up account:", err);
+      showWarmupToast(`Warm-up failed for ${accountName}`, true);
+    } finally {
+      setWarmingUpId(null);
+    }
+  };
+
+  const handleWarmupAll = async () => {
+    try {
+      setIsWarmingAll(true);
+      const summary = await warmupAllAccounts();
+      if (summary.total_accounts === 0) {
+        showWarmupToast("No accounts available for warm-up", true);
+        return;
+      }
+
+      if (summary.failed_account_ids.length === 0) {
+        showWarmupToast(
+          `Warm-up sent for all ${summary.warmed_accounts} account${
+            summary.warmed_accounts === 1 ? "" : "s"
+          }`
+        );
+      } else {
+        showWarmupToast(
+          `Warmed ${summary.warmed_accounts}/${summary.total_accounts}. Failed: ${summary.failed_account_ids.length}`,
+          true
+        );
+      }
+    } catch (err) {
+      console.error("Failed to warm up all accounts:", err);
+      showWarmupToast("Warm-up all failed", true);
+    } finally {
+      setIsWarmingAll(false);
+    }
+  };
+
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const hasRunningProcesses = processInfo && processInfo.count > 0;
@@ -151,6 +206,14 @@ function App() {
                   </div>
                 </div>
               )}
+              <button
+                onClick={handleWarmupAll}
+                disabled={isWarmingAll || accounts.length === 0}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 transition-colors disabled:opacity-50"
+                title="Send minimal traffic using all accounts"
+              >
+                {isWarmingAll ? "Warming all..." : "Warm-up All"}
+              </button>
               <button
                 onClick={handleRefresh}
                 disabled={isRefreshing}
@@ -216,11 +279,15 @@ function App() {
                 <AccountCard
                   account={activeAccount}
                   onSwitch={() => { }}
+                  onWarmup={() =>
+                    handleWarmupAccount(activeAccount.id, activeAccount.name)
+                  }
                   onDelete={() => handleDelete(activeAccount.id)}
                   onRefresh={() => refreshSingleUsage(activeAccount.id)}
                   onRename={(newName) => renameAccount(activeAccount.id, newName)}
                   switching={switchingId === activeAccount.id}
                   switchDisabled={hasRunningProcesses ?? false}
+                  warmingUp={isWarmingAll || warmingUpId === activeAccount.id}
                   masked={maskedAccounts.has(activeAccount.id)}
                   onToggleMask={() => toggleMask(activeAccount.id)}
                 />
@@ -239,11 +306,13 @@ function App() {
                       key={account.id}
                       account={account}
                       onSwitch={() => handleSwitch(account.id)}
+                      onWarmup={() => handleWarmupAccount(account.id, account.name)}
                       onDelete={() => handleDelete(account.id)}
                       onRefresh={() => refreshSingleUsage(account.id)}
                       onRename={(newName) => renameAccount(account.id, newName)}
                       switching={switchingId === account.id}
                       switchDisabled={hasRunningProcesses ?? false}
+                      warmingUp={isWarmingAll || warmingUpId === account.id}
                       masked={maskedAccounts.has(account.id)}
                       onToggleMask={() => toggleMask(account.id)}
                     />
@@ -259,6 +328,19 @@ function App() {
       {refreshSuccess && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-3 bg-green-600 text-white rounded-lg shadow-lg text-sm flex items-center gap-2">
           <span>✓</span> Usage refreshed successfully
+        </div>
+      )}
+
+      {/* Warm-up Toast */}
+      {warmupToast && (
+        <div
+          className={`fixed bottom-20 left-1/2 -translate-x-1/2 px-4 py-3 rounded-lg shadow-lg text-sm ${
+            warmupToast.isError
+              ? "bg-red-600 text-white"
+              : "bg-amber-100 text-amber-900 border border-amber-300"
+          }`}
+        >
+          {warmupToast.message}
         </div>
       )}
 

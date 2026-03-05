@@ -9,6 +9,8 @@ use crate::types::{
 };
 
 const CHATGPT_BACKEND_API: &str = "https://chatgpt.com/backend-api";
+const OPENAI_API: &str = "https://api.openai.com/v1";
+const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
 
 /// Get usage information for an account
 pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
@@ -48,6 +50,20 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
     }
 }
 
+/// Send a minimal authenticated request to warm up account traffic paths.
+pub async fn warmup_account(account: &StoredAccount) -> Result<()> {
+    println!("[Warmup] Sending warm-up request for account: {}", account.name);
+
+    match &account.auth_data {
+        AuthData::ApiKey { key } => warmup_with_api_key(key).await,
+        AuthData::ChatGPT {
+            access_token,
+            account_id,
+            ..
+        } => warmup_with_chatgpt_token(access_token, account_id.as_deref()).await,
+    }
+}
+
 /// Get usage with ChatGPT access token
 async fn get_usage_with_chatgpt_token(
     account_id: &str,
@@ -56,22 +72,7 @@ async fn get_usage_with_chatgpt_token(
     chatgpt_account_id: Option<&str>,
 ) -> Result<UsageInfo> {
     let client = reqwest::Client::new();
-
-    let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("codex-cli/1.0.0"));
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {access_token}")).context("Invalid access token")?,
-    );
-
-    if let Some(acc_id) = chatgpt_account_id {
-        println!("[Usage] Using ChatGPT Account ID: {acc_id}");
-        if let Ok(header_name) = HeaderName::from_bytes(b"chatgpt-account-id") {
-            if let Ok(header_value) = HeaderValue::from_str(acc_id) {
-                headers.insert(header_name, header_value);
-            }
-        }
-    }
+    let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
 
     // Use the WHAM endpoint for ChatGPT auth
     let url = format!("{CHATGPT_BACKEND_API}/wham/usage");
@@ -117,6 +118,74 @@ async fn get_usage_with_chatgpt_token(
     );
 
     Ok(usage)
+}
+
+async fn warmup_with_chatgpt_token(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
+    let url = format!("{CHATGPT_BACKEND_API}/wham/usage");
+
+    let response = client
+        .get(&url)
+        .headers(headers)
+        .send()
+        .await
+        .context("Failed to send ChatGPT warm-up request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        println!("[Warmup] ChatGPT warm-up error response: {body}");
+        anyhow::bail!("ChatGPT warm-up failed with status {status}");
+    }
+
+    Ok(())
+}
+
+async fn warmup_with_api_key(api_key: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{OPENAI_API}/models"))
+        .header(USER_AGENT, CODEX_USER_AGENT)
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
+        .send()
+        .await
+        .context("Failed to send API key warm-up request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        println!("[Warmup] API key warm-up error response: {body}");
+        anyhow::bail!("API key warm-up failed with status {status}");
+    }
+
+    Ok(())
+}
+
+fn build_chatgpt_headers(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(CODEX_USER_AGENT));
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}")).context("Invalid access token")?,
+    );
+
+    if let Some(acc_id) = chatgpt_account_id {
+        println!("[Usage] Using ChatGPT Account ID: {acc_id}");
+        if let Ok(header_name) = HeaderName::from_bytes(b"chatgpt-account-id") {
+            if let Ok(header_value) = HeaderValue::from_str(acc_id) {
+                headers.insert(header_name, header_value);
+            }
+        }
+    }
+
+    Ok(headers)
 }
 
 /// Convert API response to UsageInfo
